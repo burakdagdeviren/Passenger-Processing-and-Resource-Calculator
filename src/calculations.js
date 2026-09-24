@@ -292,6 +292,44 @@ export function calculateScenario(s, mode = 'demand') {
     demandCapacityRatio: Number.isFinite(systemCapacity) && systemCapacity > 0 ? originating / systemCapacity : null };
 }
 
+export const AIRPORT_SIZE_BANDS = [
+  { name: 'Small', min: 0, max: 1_000_000 },
+  { name: 'Medium', min: 1_000_000, max: 10_000_000 },
+  { name: 'Large', min: 10_000_000, max: 25_000_000 },
+  { name: 'Mega', min: 25_000_000, max: 40_000_000 },
+  { name: 'Major', min: 40_000_000, max: Infinity },
+];
+
+// Converts the four process capacities into a comparable annual PAX equivalent.
+// The category is a scenario comparison, not an observed airport classification.
+export function estimateAirportSize(s, mode = 'demand', analysis = calculateScenario(s, mode)) {
+  if (!analysis.valid) return { available: false, reason: 'Complete the calculator inputs first.' };
+  const annualisation = pct(s.departureShare) * pct(s.originatingShare) * pct(s.designHourShare) * value(s.designDayFactor);
+  if (!(annualisation > 0)) return { available: false, reason: 'Use positive departure, originating and design-hour shares to estimate annual airport PAX.' };
+  const annualFactor = value(s.operatingDays) / annualisation;
+  const processes = RESOURCE_KEYS.map(key => {
+    const r = s.resources[key];
+    const row = analysis.resources[key];
+    const demand = demandForResource(s, key, analysis.originating, analysis.routes.visits);
+    const unitCount = mode === 'demand' ? row.recommended : value(r.open);
+    const capacity = Math.min(...row.pools.map(pool => {
+      const open = mode === 'demand' ? pool.minimum : pool.open;
+      const usable = capacityAtTarget(open, row.mu, pct(r.utilisation), value(r.targetMinutes), pct(r.targetPercent));
+      const coefficient = demand.coefficient * pool.share;
+      const background = demand.background * pool.share;
+      return coefficient > 0 ? Math.max(0, (usable - background) / coefficient) : Infinity;
+    }));
+    return { key, units: unitCount, originatingPerHour: capacity, annualPax: capacity * annualFactor };
+  });
+  const limiting = processes.filter(row => Number.isFinite(row.annualPax));
+  if (!limiting.length) return { available: false, reason: 'The selected routes do not use these processing points.' };
+  const annualPax = Math.min(...limiting.map(row => row.annualPax));
+  if (!(annualPax > 0)) return { available: false, reason: 'The selected open units do not support additional originating passengers.', processes };
+  const bandIndex = annualPax > 40_000_000 ? 4 : AIRPORT_SIZE_BANDS.findIndex((band, i) => i === 3 ? annualPax <= band.max && annualPax >= band.min : annualPax >= band.min && annualPax < band.max);
+  const bottlenecks = limiting.filter(row => Math.abs(row.annualPax - annualPax) <= Math.max(1, annualPax * 1e-8)).map(row => row.key);
+  return { available: true, annualPax, annualFactor, bandIndex, band: AIRPORT_SIZE_BANDS[bandIndex], bottlenecks, processes };
+}
+
 export function applyGrowth(s, percent) {
   const next = structuredClone(s);
   const factor = 1 + percent / 100;

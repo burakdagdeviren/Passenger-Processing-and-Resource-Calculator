@@ -20,6 +20,7 @@ The Vite build in `dist/` is a static website. Its `.openai/hosting.json` file i
 - Workload is transactions multiplied by full service-cycle seconds. Group-size assumptions convert passengers to transactions. Security uses effective whole-lane passengers/hour.
 - Throughput sizing divides workload by available seconds and target utilisation. Queue sizing uses M/M/c Erlang-C with a common queue, identical servers and steady arrivals. Each dedicated pool is rounded and evaluated independently.
 - Reverse capacity converts process limits back to originating passengers/hour under a fixed route mix. Transfer rescreening demand is background security work.
+- The airport-size indicator converts the limiting capacity across counters, kiosks, bag drop and security into an annual airport-PAX equivalent. Its ACI EUROPE band is a scenario comparison, not a measurement of physical airport size or actual traffic.
 - A 15-minute burst is a steady-rate stress case. It does not model carry-over queues or passenger walk times.
 - Installed, open, unavailable and reserve units are distinct. An unavailable or reserve unit does not serve passengers.
 - The default values are illustrative. The interface has provenance status by assumption group and source notes. The output is not a whole-terminal capacity certification.

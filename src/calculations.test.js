@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultScenario, calculateScenario, erlangC, applyGrowth, routeBreakdown } from './calculations.js';
+import { defaultScenario, calculateScenario, erlangC, applyGrowth, routeBreakdown, estimateAirportSize } from './calculations.js';
 
 test('baseline conserves passengers and produces four resource counts', () => {
   const s = defaultScenario();
@@ -125,4 +125,25 @@ test('unrealistically large unit requirements produce a bounded error', () => {
   const result = calculateScenario(s);
   assert.equal(result.valid, false);
   assert.ok(result.errors[0].includes('supported'));
+});
+
+test('airport-size estimate uses all four recommended process capacities', () => {
+  const s = defaultScenario();
+  s.directOriginating = 2300;
+  const size = estimateAirportSize(s, 'demand');
+  assert.equal(size.available, true);
+  assert.equal(size.band.name, 'Large');
+  assert.ok(Math.abs(size.annualPax - 16_936_000) < 1e-6);
+  assert.deepEqual(size.processes.map(row => row.units), [29, 10, 18, 15]);
+  assert.deepEqual(size.bottlenecks, ['counter']);
+  assert.ok(size.processes.every(row => row.annualPax >= size.annualPax));
+});
+
+test('annual-size estimate does not invent a category without conversion or capacity', () => {
+  const s = defaultScenario();
+  s.departureShare = 0;
+  assert.equal(estimateAirportSize(s).available, false);
+  s.departureShare = 50;
+  s.resources.security.open = 0;
+  assert.equal(estimateAirportSize(s, 'capacity').available, false);
 });

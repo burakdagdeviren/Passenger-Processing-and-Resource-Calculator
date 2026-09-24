@@ -43,7 +43,9 @@ export function defaultScenario() {
     counterBagShare: 60,
     kioskBagShare: 60,
     onlineBagShare: 60,
+    onlineStaffedBagShare: 0,
     onlineTagKioskShare: 0,
+    staffedBagAcceptanceSec: 60,
     securityOriginShare: 100,
     transferSecurityPassengers: 0,
     transferRescreenShare: 100,
@@ -95,6 +97,9 @@ export function validateScenario(s) {
     ['onlineBagShare', 'Online bag participation'], ['onlineTagKioskShare', 'Online tag-printing share'],
     ['securityOriginShare', 'Originating security share'], ['transferRescreenShare', 'Transfer rescreen share'],
   ]) req(key, label, 0, 100);
+  // Older saved scenarios omit these inputs; keep their original routing valid.
+  if (s.onlineStaffedBagShare !== undefined) req('onlineStaffedBagShare', 'Online staffed bag-acceptance share', 0, 100);
+  if (s.staffedBagAcceptanceSec !== undefined) req('staffedBagAcceptanceSec', 'Staffed bag-acceptance service time', 0.000001);
   req('transferSecurityPassengers', 'Transfer passengers at security');
   if (finite(s.counterShare) && finite(s.kioskShare) && finite(s.onlineShare) &&
       Math.abs(value(s.counterShare) + value(s.kioskShare) + value(s.onlineShare) - 100) > 1e-7) {
@@ -132,6 +137,7 @@ export function validateScenario(s) {
     check('secondaryShare', 'dedicated pool share', 0, 100);
     check('secondaryOpen', 'dedicated open units', 0, Infinity, true);
     if (finite(r.open) && finite(r.installed) && finite(r.unavailable) && value(r.open) > value(r.installed) - value(r.unavailable)) errors.push(`${RESOURCE_META[key].short}: open units exceed installed minus unavailable units.`);
+    if (finite(r.unavailable) && finite(r.installed) && value(r.unavailable) > value(r.installed)) errors.push(`${RESOURCE_META[key].short}: unavailable units exceed installed units.`);
     if (finite(r.secondaryOpen) && finite(r.open) && value(r.secondaryOpen) > value(r.open)) errors.push(`${RESOURCE_META[key].short}: dedicated open units exceed open units.`);
     if (value(r.secondaryShare) === 0 && value(r.secondaryOpen) > 0) errors.push(`${RESOURCE_META[key].short}: dedicated open units need a positive dedicated demand share.`);
   }
@@ -155,21 +161,52 @@ export function originatingDemand(s) {
 export function routeBreakdown(s, originating = originatingDemand(s)) {
   const c = pct(s.counterShare), k = pct(s.kioskShare), o = pct(s.onlineShare);
   const kb = pct(s.kioskBagShare), ob = pct(s.onlineBagShare), z = pct(s.onlineTagKioskShare);
-  const routes = [
-    { label: 'Staffed check-in', passengers: originating * c, counter: 1, kiosk: 0, bagDrop: 0, security: pct(s.securityOriginShare) },
-    { label: 'Kiosk · no checked bag', passengers: originating * k * (1 - kb), counter: 0, kiosk: 1, bagDrop: 0, security: pct(s.securityOriginShare) },
-    { label: 'Kiosk → bag drop', passengers: originating * k * kb, counter: 0, kiosk: 1, bagDrop: 1, security: pct(s.securityOriginShare) },
-    { label: 'Online → bag drop', passengers: originating * o * ob * (1 - z), counter: 0, kiosk: 0, bagDrop: 1, security: pct(s.securityOriginShare) },
-    { label: 'Online → kiosk → bag drop', passengers: originating * o * ob * z, counter: 0, kiosk: 1, bagDrop: 1, security: pct(s.securityOriginShare) },
-    { label: 'Online · no checked bag', passengers: originating * o * (1 - ob), counter: 0, kiosk: 0, bagDrop: 0, security: pct(s.securityOriginShare) },
-  ];
+  const kioskAvailable = value(s.resources.kiosk.open) > 0 && value(s.resources.kiosk.installed) > value(s.resources.kiosk.unavailable);
+  const bagDropAvailable = value(s.resources.bagDrop.open) > 0 && value(s.resources.bagDrop.installed) > value(s.resources.bagDrop.unavailable);
+  const staffedOnlineBagShare = bagDropAvailable ? pct(s.onlineStaffedBagShare ?? 0) : 1;
+  const routes = [];
+  const add = (label, kind, passengers, counter = 0, kiosk = 0, bagDrop = 0, counterService = null, counterBagShare = 0) => {
+    if (passengers > 0) routes.push({ label, kind, passengers, counter, kiosk, bagDrop, counterService,
+      counterBagShare, security: pct(s.securityOriginShare) });
+  };
+  add('Staffed check-in', 'staffed-checkin', originating * c, 1, 0, 0, 'full', pct(s.counterBagShare));
+  const kioskWithoutBag = originating * k * (1 - kb);
+  const kioskWithBag = originating * k * kb;
+  if (kioskAvailable) {
+    add('Kiosk · no checked bag', 'kiosk-no-bag', kioskWithoutBag, 0, 1);
+    if (bagDropAvailable) add('Kiosk → bag drop', 'kiosk-bag-drop', kioskWithBag, 0, 1, 1);
+    else add('Kiosk → staffed bag acceptance', 'kiosk-staffed-bag', kioskWithBag, 1, 1, 0, 'bag', 1);
+  } else {
+    add('Kiosk unavailable → staffed check-in', 'kiosk-to-counter', kioskWithoutBag, 1, 0, 0, 'full');
+    add('Kiosk unavailable → staffed check-in with bag', 'kiosk-to-counter-bag', kioskWithBag, 1, 0, 0, 'full', 1);
+  }
+  const onlineWithBag = originating * o * ob;
+  const onlineToDesk = onlineWithBag * staffedOnlineBagShare;
+  const onlineRemaining = onlineWithBag - onlineToDesk;
+  const onlineTagNeedsKiosk = onlineRemaining * z;
+  const onlineDirectBagDrop = onlineRemaining - onlineTagNeedsKiosk;
+  add('Online check-in → staffed bag acceptance', 'online-staffed-bag',
+    onlineToDesk + (kioskAvailable ? 0 : onlineTagNeedsKiosk), 1, 0, 0, 'bag', 1);
+  if (bagDropAvailable) {
+    add('Online → bag drop', 'online-bag-drop', onlineDirectBagDrop, 0, 0, 1);
+    if (kioskAvailable) add('Online → kiosk → bag drop', 'online-kiosk-bag-drop', onlineTagNeedsKiosk, 0, 1, 1);
+  }
+  add('Online · no checked bag', 'online-no-bag', originating * o * (1 - ob));
   const visits = Object.fromEntries(RESOURCE_KEYS.map(key => [key, routes.reduce((sum, r) => sum + r.passengers * r[key], 0)]));
-  const bagsAtCounter = originating * c * pct(s.counterBagShare);
+  const counterFullVisits = routes.reduce((sum, r) => sum + (r.counterService === 'full' ? r.passengers : 0), 0);
+  const counterBagAcceptanceVisits = routes.reduce((sum, r) => sum + (r.counterService === 'bag' ? r.passengers : 0), 0);
+  const bagsAtCounter = routes.reduce((sum, r) => sum + r.passengers * r.counterBagShare, 0);
   const bagDropPassengers = visits.bagDrop;
-  return { routes, visits, bagsAtCounter, bagDropPassengers, uniquePassengers: originating };
+  return { routes, visits, bagsAtCounter, bagDropPassengers, counterFullVisits, counterBagAcceptanceVisits,
+    kioskAvailable, bagDropAvailable, uniquePassengers: originating };
 }
 
-export function effectiveServiceSeconds(s, key) {
+export function effectiveServiceSeconds(s, key, routes) {
+  if (key === 'counter') {
+    const mix = routes?.visits.counter > 0 ? routes : routeBreakdown(s, 1);
+    if (mix.visits.counter > 0) return (mix.counterFullVisits * value(s.resources.counter.serviceSec) +
+      mix.counterBagAcceptanceVisits * value(s.staffedBagAcceptanceSec ?? 60)) / mix.visits.counter;
+  }
   if (key === 'bagDrop' && s.bagServiceMode === 'decomposed') {
     return value(s.bagFixedSeconds) + value(s.bagsPerTransaction) * value(s.bagSecondsPerBag) + pct(s.bagExceptionShare) * value(s.bagExceptionExtraSeconds);
   }
@@ -248,7 +285,7 @@ export function calculateScenario(s, mode = 'demand') {
 
   for (const key of RESOURCE_KEYS) {
     const r = s.resources[key];
-    const seconds = effectiveServiceSeconds(s, key);
+    const seconds = effectiveServiceSeconds(s, key, routes);
     const mu = 3600 / seconds;
     const util = pct(r.utilisation);
     const targetFraction = pct(r.targetPercent);

@@ -27,7 +27,7 @@ The calculator also translates the limiting capacity of the four processes into 
 ### A useful first pass
 
 - Start with **originating passengers in the peak hour**, or select one alternative traffic basis: peak-hour departing passengers, annual airport passengers, or annual departing passengers.
-- Split originating passengers between **staffed**, **kiosk**, and **online** check-in. A kiosk passenger checking a bag visits both the kiosk and bag drop; staffed check-in includes bag acceptance in its service time.
+- Split originating passengers between **staffed**, **kiosk**, and **online** check-in. With no kiosk open, kiosk passengers move to staffed check-in. With no bag drop open, checked-bag passengers move to a staffed desk. Online checked-bag passengers can also choose staffed bag acceptance while bag drop is available.
 - Edit service times, lane throughput, target utilization, and the percentage of customers who should start service within the chosen waiting-time target.
 - Check the proposed open units, then create a what-if scenario or switch to capacity mode. Advanced inputs cover transfers, bags, short bursts, dedicated queues, unavailable units, and reserves.
 - Export scenarios as JSON or results as CSV; the print view provides a compact report. Scenarios remain in browser storage unless you export them.
@@ -48,7 +48,7 @@ originating PAX / design hour
     × design-hour share
 ```
 
-**2. Route passengers through the processes they actually use.** Staffed, kiosk, and online check-in shares sum to 100%. Bag participation adds bag-drop visits to the relevant kiosk and online routes. Originating security demand uses its own selected share; transfer rescreening is additional background security work. Visits across processes can therefore exceed unique passengers.
+**2. Route passengers through the processes they actually use.** Staffed, kiosk, and online check-in shares sum to 100%. With no kiosk open, its passengers move to full staffed check-in. With no bag drop open, a kiosk passenger with a bag uses the kiosk and then staffed bag acceptance; an online passenger with a bag uses the explicit **online check-in → staffed bag acceptance** route. That online route also has an editable share when bag drop is open. If an online passenger needs a kiosk bag tag and no kiosk is open, the passenger uses staffed bag acceptance instead. Originating security demand uses its own selected share; transfer rescreening is additional background security work. Visits across processes can therefore exceed unique passengers.
 
 **3. Size each service pool for throughput and an indicative queue target.** For transaction arrival rate `λ` per hour, service time `s` seconds, and target utilization `u`:
 
@@ -58,7 +58,7 @@ throughput units      = ceiling(λ ÷ (μ × u))
 recommended open units = max(throughput units, queue-target units, configured minimum)
 ```
 
-The queue-target count is the smallest number of open units meeting the selected `P(wait ≤ target minutes)` under an **M/M/c Erlang-C** model. Dedicated pools are calculated and rounded separately. A security lane's entered passengers/hour represents whole-lane effective throughput.
+Full check-in and staffed bag acceptance have separate editable service times. Their visit-weighted mean service time feeds the shared counter pool. The queue-target count is the smallest number of open units meeting the selected `P(wait ≤ target minutes)` under an **M/M/c Erlang-C** model. Dedicated pools are calculated and rounded separately. A security lane's entered passengers/hour represents whole-lane effective throughput.
 
 **4. Reverse the model for capacity mode.** The calculator finds each open pool's usable transaction rate under the same utilization and queue targets, subtracts fixed background work, and divides by the applicable passenger-route share. The lowest resulting originating-passenger rate limits the modeled system.
 
@@ -76,6 +76,8 @@ With **1,200 originating passengers/hour**, a **40% staffed / 20% kiosk / 40% on
 | Security | 1,200 | 8 lanes |
 
 The annual capacity equivalent is approximately **8.8 million airport passengers**, using the default annual conversion assumptions. These values illustrate the model; replace them with airport-specific observations before planning an investment.
+
+For the **1 million annual airport-passenger** example with no kiosks or bag drops open, the default 40% staffed / 20% kiosk / 40% online preference is rerouted before sizing. About **115 of 137 originating passengers/hour** visit a staffed desk: kiosk users move to full check-in and online checked-bag users move to staffed bag acceptance. Under the illustrative 90-second full check-in and 60-second bag-acceptance times, the result is **4 open counters, 0 kiosks, 0 bag drops, and 1 security lane**. The online carry-on-only group goes directly to security.
 
 ## Run locally
 
@@ -100,7 +102,7 @@ The static build is written to `dist/`. Every push to `main` runs the tests and 
 
 ## Planning boundaries
 
-This is an **indicative processing model**, not a terminal design approval or a waiting-time simulation. Erlang C assumes steady independent arrivals, exponentially distributed service times, identical servers, and a common queue within each pool. The 15-minute burst option applies a steady stress rate; it does not simulate queue carry-over between intervals. Walking time, downstream congestion, staffing rosters, and real arrival variability are outside the model.
+This is an **indicative processing model**, not a terminal design approval or a time-stepped waiting simulation. Erlang C assumes steady independent arrivals, exponentially distributed service times, identical servers, and a common queue within each pool. The counter queue uses a weighted mean for full check-in and bag-acceptance transactions; it does not separately simulate their service-time distributions. The 15-minute burst option applies a steady stress rate; it does not simulate queue carry-over between intervals. Walking time, downstream congestion, staffing rosters, and real arrival variability are outside the model.
 
 Illustrative defaults are clearly marked and editable. Use measured route shares, service cycles, lane rates, and passenger-arrival profiles whenever available. The interface records assumption provenance so a saved scenario can be reviewed with its source note.
 

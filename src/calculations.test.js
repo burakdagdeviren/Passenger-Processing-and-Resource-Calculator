@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultScenario, calculateScenario, erlangC, applyGrowth, routeBreakdown, estimateAirportSize } from './calculations.js';
+import { defaultScenario, calculateScenario, erlangC, applyGrowth, routeBreakdown, estimateAirportSize, validateScenario } from './calculations.js';
 
 test('baseline conserves passengers and produces four resource counts', () => {
   const s = defaultScenario();
@@ -146,4 +146,65 @@ test('annual-size estimate does not invent a category without conversion or capa
   s.departureShare = 50;
   s.resources.security.open = 0;
   assert.equal(estimateAirportSize(s, 'capacity').available, false);
+});
+
+test('zero kiosks and bag drops redirect work to staffed desks without inventing self-service visits', () => {
+  const s = defaultScenario();
+  s.demandBasis = 'annual-airport';
+  s.annualAirport = 1_000_000;
+  for (const key of ['kiosk', 'bagDrop']) { s.resources[key].open = 0; s.resources[key].installed = 0; }
+  const demand = calculateScenario(s);
+  const capacity = calculateScenario(s, 'capacity');
+  assert.equal(demand.valid, true);
+  assert.ok(Math.abs(demand.routes.routes.reduce((sum, route) => sum + route.passengers, 0) - demand.originating) < 1e-9);
+  assert.ok(Math.abs(demand.routes.visits.counter - demand.originating * 0.84) < 1e-9);
+  assert.equal(demand.routes.visits.kiosk, 0);
+  assert.equal(demand.routes.visits.bagDrop, 0);
+  assert.ok(Math.abs(demand.routes.counterBagAcceptanceVisits - demand.originating * 0.24) < 1e-9);
+  assert.ok(Math.abs(demand.resources.counter.seconds - (0.6 * 90 + 0.24 * 60) / 0.84) < 1e-9);
+  assert.deepEqual([demand.resources.counter.recommended, demand.resources.kiosk.recommended, demand.resources.bagDrop.recommended], [4, 0, 0]);
+  assert.ok(capacity.systemCapacity > 0);
+  assert.deepEqual(capacity.bottlenecks, ['counter']);
+});
+
+test('a closed bag drop sends kiosk and online checked bags to staffed acceptance', () => {
+  const s = defaultScenario();
+  s.resources.bagDrop.open = 0;
+  s.resources.bagDrop.installed = 0;
+  const result = calculateScenario(s);
+  assert.equal(result.valid, true);
+  assert.deepEqual([result.routes.visits.counter, result.routes.visits.kiosk, result.routes.visits.bagDrop], [912, 240, 0]);
+  assert.equal(result.routes.routes.find(route => route.kind === 'kiosk-staffed-bag').passengers, 144);
+  assert.equal(result.routes.routes.find(route => route.kind === 'online-staffed-bag').passengers, 288);
+  assert.equal(result.routes.counterBagAcceptanceVisits, 432);
+  assert.ok(Math.abs(result.resources.counter.seconds - (480 * 90 + 432 * 60) / 912) < 1e-9);
+});
+
+test('explicit online staffed-bag route and missing tag kiosk are accounted for once', () => {
+  const s = defaultScenario();
+  s.onlineStaffedBagShare = 50;
+  s.onlineTagKioskShare = 50;
+  const withKiosk = routeBreakdown(s);
+  assert.equal(withKiosk.routes.find(route => route.kind === 'online-staffed-bag').passengers, 144);
+  assert.equal(withKiosk.visits.kiosk, 312);
+  assert.equal(withKiosk.visits.bagDrop, 288);
+  s.resources.kiosk.open = 0;
+  s.resources.kiosk.installed = 0;
+  const withoutKiosk = routeBreakdown(s);
+  assert.equal(withoutKiosk.visits.kiosk, 0);
+  assert.equal(withoutKiosk.routes.find(route => route.kind === 'online-staffed-bag').passengers, 216);
+  assert.equal(withoutKiosk.visits.bagDrop, 72);
+});
+
+test('older saved scenarios without the new desk assumptions retain valid defaults', () => {
+  const s = defaultScenario();
+  delete s.onlineStaffedBagShare;
+  delete s.staffedBagAcceptanceSec;
+  s.resources.bagDrop.open = 0;
+  s.resources.bagDrop.installed = 0;
+  assert.deepEqual(validateScenario(s), []);
+  const result = calculateScenario(s);
+  assert.equal(result.valid, true);
+  assert.equal(result.routes.counterBagAcceptanceVisits, 432);
+  assert.ok(Math.abs(result.resources.counter.seconds - (480 * 90 + 432 * 60) / 912) < 1e-9);
 });
